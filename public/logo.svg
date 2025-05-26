@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6"/>
+      <stop offset="100%" style="stop-color:#60A5FA"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="#1F2937"/>
+  <g transform="translate(96, 96)">
+    <!-- Brain network visualization -->
+    <path d="M160 40c0-22.091 17.909-40 40-40s40 17.909 40 40-17.909 40-40 40-40-17.909-40-40z" fill="url(#gradient)"/>
+    <path d="M80 200c0-22.091 17.909-40 40-40s40 17.909 40 40-17.909 40-40 40-40-17.909-40-40z" fill="url(#gradient)"/>
+    <path d="M240 200c0-22.091 17.909-40 40-40s40 17.909 40 40-17.909 40-40 40-40-17.909-40-40z" fill="url(#gradient)"/>
+    <!-- Connection lines -->
+    <path d="M200 80l-40 80M200 80l40 80" stroke="url(#gradient)" stroke-width="8" fill="none"/>
+    <!-- Pulse animation circles -->
+    <circle cx="200" cy="40" r="8" fill="#60A5FA">
+      <animate attributeName="r" values="8;12;8" dur="2s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="1;0.5;1" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="120" cy="200" r="8" fill="#60A5FA">
+      <animate attributeName="r" values="8;12;8" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+      <animate attributeName="opacity" values="1;0.5;1" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+    </circle>
+    <circle cx="280" cy="200" r="8" fill="#60A5FA">
+      <animate attributeName="r" values="8;12;8" dur="2s" repeatCount="indefinite" begin="1s"/>
+      <animate attributeName="opacity" values="1;0.5;1" dur="2s" repeatCount="indefinite" begin="1s"/>
+    </circle>
+  </g>
+</svg>
