@@ -15,6 +15,7 @@
     "eject": "react-scripts eject"
   },
   "dependencies": {
+    "@cloudflare/workers-types": "^4.20250528.0",
     "@headlessui/react": "1.7.17",
     "@heroicons/react": "2.1.1",
     "@tailwindcss/forms": "0.5.7",
@@ -23,6 +24,7 @@
     "concurrently": "8.2.2",
     "express": "^4.19.2",
     "llama-node": "^0.1.6",
+    "mongodb": "^6.16.0",
     "openai": "^4.103.0",
     "postcss": "8.4.35",
     "react": "18.2.0",
