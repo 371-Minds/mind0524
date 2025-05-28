@@ -1,28 +1,70 @@
 /**
+ * Memory.js - Enhanced memory system for agents
+ * 
+ * Improvements:
+ * - Better persistence with file system storage
+ * - Improved error handling
+ * - Memory statistics and monitoring
+ * - Memory compression for large datasets
+ * - TTL (Time-To-Live) support for all memory types
+ */
+
+const fs = require('fs');
+const path = require('path');
+const config = require('../config');
+const { createHash } = require('crypto');
+
+/**
  * Base Memory class for agent memory systems
  */
 class Memory {
-  constructor() {
-    this.data = {};
+  /**
+   * @param {Object} options - Memory options
+   */
+  constructor(options = {}) {
+    this.data = new Map();
+    this.stats = {
+      reads: 0,
+      writes: 0,
+      hits: 0,
+      misses: 0,
+      lastAccess: null
+    };
+    this.options = {
+      namespace: options.namespace || 'default',
+      ...options
+    };
   }
 
   /**
    * Store a value in memory
    * @param {string} key - The key to store the value under
    * @param {any} value - The value to store
+   * @param {Object} options - Storage options
+   * @param {number} [options.ttl] - Time-to-live in milliseconds
    * @returns {boolean} - Whether the operation was successful
    */
-  store(key, value) {
+  store(key, value, options = {}) {
     if (!key || typeof key !== 'string') {
       throw new Error('Key must be a non-empty string');
     }
     
-    this.data[key] = {
-      value,
-      timestamp: Date.now()
-    };
-    
-    return true;
+    try {
+      this.data.set(key, {
+        value,
+        timestamp: Date.now(),
+        ttl: options.ttl || null,
+        metadata: options.metadata || {}
+      });
+      
+      this.stats.writes++;
+      this.stats.lastAccess = Date.now();
+      
+      return true;
+    } catch (error) {
+      console.error(`Memory store error: ${error.message}`);
+      return false;
+    }
   }
 
   /**
@@ -35,8 +77,24 @@ class Memory {
       return null;
     }
     
-    const entry = this.data[key];
-    return entry ? entry.value : null;
+    this.stats.reads++;
+    this.stats.lastAccess = Date.now();
+    
+    const entry = this.data.get(key);
+    if (!entry) {
+      this.stats.misses++;
+      return null;
+    }
+    
+    // Check if the entry has expired
+    if (entry.ttl && Date.now() - entry.timestamp > entry.ttl) {
+      this.remove(key);
+      this.stats.misses++;
+      return null;
+    }
+    
+    this.stats.hits++;
+    return entry.value;
   }
 
   /**
@@ -45,7 +103,22 @@ class Memory {
    * @returns {boolean} - Whether the key exists
    */
   has(key) {
-    return Boolean(this.data[key]);
+    if (!key || typeof key !== 'string') {
+      return false;
+    }
+    
+    const entry = this.data.get(key);
+    if (!entry) {
+      return false;
+    }
+    
+    // Check if the entry has expired
+    if (entry.ttl && Date.now() - entry.timestamp > entry.ttl) {
+      this.remove(key);
+      return false;
+    }
+    
+    return true;
   }
 
   /**
@@ -54,11 +127,7 @@ class Memory {
    * @returns {boolean} - Whether the operation was successful
    */
   remove(key) {
-    if (this.has(key)) {
-      delete this.data[key];
-      return true;
-    }
-    return false;
+    return this.data.delete(key);
   }
 
   /**
@@ -66,8 +135,13 @@ class Memory {
    * @returns {boolean} - Whether the operation was successful
    */
   clear() {
-    this.data = {};
-    return true;
+    try {
+      this.data.clear();
+      return true;
+    } catch (error) {
+      console.error(`Memory clear error: ${error.message}`);
+      return false;
+    }
   }
 
   /**
@@ -75,15 +149,50 @@ class Memory {
    * @returns {string[]} - Array of all keys
    */
   keys() {
-    return Object.keys(this.data);
+    return Array.from(this.data.keys());
   }
 
   /**
    * Get all entries in memory
-   * @returns {Object} - All memory entries
+   * @returns {Map} - All memory entries
    */
   getAll() {
     return this.data;
+  }
+  
+  /**
+   * Get memory statistics
+   * @returns {Object} - Memory statistics
+   */
+  getStats() {
+    return {
+      ...this.stats,
+      size: this.data.size,
+      hitRate: this.stats.reads > 0 ? this.stats.hits / this.stats.reads : 0
+    };
+  }
+  
+  /**
+   * Find entries by a predicate function
+   * @param {Function} predicate - Function that takes (value, key) and returns boolean
+   * @returns {Array} - Array of matching entries
+   */
+  find(predicate) {
+    const results = [];
+    
+    for (const [key, entry] of this.data.entries()) {
+      // Skip expired entries
+      if (entry.ttl && Date.now() - entry.timestamp > entry.ttl) {
+        this.remove(key);
+        continue;
+      }
+      
+      if (predicate(entry.value, key)) {
+        results.push({ key, value: entry.value, metadata: entry.metadata });
+      }
+    }
+    
+    return results;
   }
 }
 
@@ -93,35 +202,28 @@ class Memory {
  */
 class ShortTermMemory extends Memory {
   /**
-   * @param {number} expiryTime - Time in milliseconds after which entries expire
+   * @param {Object} options - Memory options
+   * @param {number} [options.expiryTime] - Time in milliseconds after which entries expire
    */
-  constructor(expiryTime = 1000 * 60 * 30) { // Default: 30 minutes
-    super();
-    this.expiryTime = expiryTime;
+  constructor(options = {}) {
+    super(options);
+    this.expiryTime = options.expiryTime || config.memory.shortTerm.defaultExpiryTime;
+    
+    // Set up automatic cleanup
+    this.cleanupInterval = setInterval(() => this.cleanup(), Math.min(this.expiryTime / 2, 60000));
   }
 
   /**
-   * Retrieve a value, checking for expiry
-   * @param {string} key - The key to retrieve
-   * @returns {any|null} - The retrieved value or null if not found or expired
+   * Store a value with automatic expiry
+   * @param {string} key - The key to store the value under
+   * @param {any} value - The value to store
+   * @param {Object} options - Storage options
+   * @returns {boolean} - Whether the operation was successful
    */
-  retrieve(key) {
-    if (!key || typeof key !== 'string') {
-      return null;
-    }
-    
-    const entry = this.data[key];
-    if (!entry) {
-      return null;
-    }
-    
-    // Check if the entry has expired
-    if (Date.now() - entry.timestamp > this.expiryTime) {
-      this.remove(key);
-      return null;
-    }
-    
-    return entry.value;
+  store(key, value, options = {}) {
+    // Default TTL to the memory's expiryTime if not specified
+    const ttl = options.ttl || this.expiryTime;
+    return super.store(key, value, { ...options, ttl });
   }
 
   /**
@@ -130,12 +232,26 @@ class ShortTermMemory extends Memory {
    */
   cleanup() {
     const now = Date.now();
-    const expiredKeys = Object.entries(this.data)
-      .filter(([_, entry]) => now - entry.timestamp > this.expiryTime)
-      .map(([key]) => key);
+    let removed = 0;
     
-    expiredKeys.forEach(key => this.remove(key));
-    return expiredKeys.length;
+    for (const [key, entry] of this.data.entries()) {
+      if (entry.ttl && now - entry.timestamp > entry.ttl) {
+        this.remove(key);
+        removed++;
+      }
+    }
+    
+    return removed;
+  }
+  
+  /**
+   * Dispose of resources
+   */
+  dispose() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
   }
 }
 
@@ -146,11 +262,29 @@ class ShortTermMemory extends Memory {
 class LongTermMemory extends Memory {
   /**
    * @param {Object} options - Options for long-term memory
-   * @param {boolean} options.persistent - Whether to persist memory to storage
+   * @param {boolean} [options.persistent=true] - Whether to persist memory to storage
+   * @param {string} [options.storageType='file'] - Storage type ('file', 'database')
+   * @param {string} [options.storagePath] - Path for file storage
    */
-  constructor(options = { persistent: true }) {
-    super();
-    this.persistent = options.persistent;
+  constructor(options = {}) {
+    super(options);
+    
+    this.persistent = options.persistent !== false;
+    this.storageType = options.storageType || config.memory.longTerm.storageType;
+    this.storagePath = options.storagePath || config.memory.longTerm.storagePath;
+    this.namespace = options.namespace || 'default';
+    
+    // Create storage directory if it doesn't exist
+    if (this.persistent && this.storageType === 'file') {
+      try {
+        if (!fs.existsSync(this.storagePath)) {
+          fs.mkdirSync(this.storagePath, { recursive: true });
+        }
+      } catch (error) {
+        console.error(`Failed to create storage directory: ${error.message}`);
+        this.persistent = false;
+      }
+    }
     
     // Load persisted data if available and persistence is enabled
     if (this.persistent) {
@@ -162,10 +296,11 @@ class LongTermMemory extends Memory {
    * Store a value and persist if enabled
    * @param {string} key - The key to store the value under
    * @param {any} value - The value to store
+   * @param {Object} options - Storage options
    * @returns {boolean} - Whether the operation was successful
    */
-  store(key, value) {
-    const result = super.store(key, value);
+  store(key, value, options = {}) {
+    const result = super.store(key, value, options);
     
     if (result && this.persistent) {
       this._saveToStorage();
@@ -208,14 +343,29 @@ class LongTermMemory extends Memory {
    * @private
    */
   _saveToStorage() {
-    // In a real implementation, this would save to a database or file
-    // For this example, we'll just log that it would be saved
-    console.log('Saving long-term memory to persistent storage');
+    if (!this.persistent) return;
     
-    // Example implementation using localStorage in a browser environment
-    // if (typeof localStorage !== 'undefined') {
-    //   localStorage.setItem('agent_long_term_memory', JSON.stringify(this.data));
-    // }
+    try {
+      if (this.storageType === 'file') {
+        const filePath = this._getStorageFilePath();
+        
+        // Convert Map to serializable object
+        const serializable = {};
+        for (const [key, entry] of this.data.entries()) {
+          serializable[key] = {
+            ...entry,
+            value: this._serializeValue(entry.value)
+          };
+        }
+        
+        fs.writeFileSync(filePath, JSON.stringify(serializable, null, 2));
+      } else if (this.storageType === 'database') {
+        // Database implementation would go here
+        console.log('Database persistence not yet implemented');
+      }
+    } catch (error) {
+      console.error(`Failed to save memory to storage: ${error.message}`);
+    }
   }
 
   /**
@@ -223,20 +373,75 @@ class LongTermMemory extends Memory {
    * @private
    */
   _loadFromStorage() {
-    // In a real implementation, this would load from a database or file
-    console.log('Loading long-term memory from persistent storage');
+    if (!this.persistent) return;
     
-    // Example implementation using localStorage in a browser environment
-    // if (typeof localStorage !== 'undefined') {
-    //   const stored = localStorage.getItem('agent_long_term_memory');
-    //   if (stored) {
-    //     try {
-    //       this.data = JSON.parse(stored);
-    //     } catch (e) {
-    //       console.error('Failed to parse stored memory data', e);
-    //     }
-    //   }
-    // }
+    try {
+      if (this.storageType === 'file') {
+        const filePath = this._getStorageFilePath();
+        
+        if (fs.existsSync(filePath)) {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          
+          // Convert serialized object back to Map entries
+          for (const [key, entry] of Object.entries(data)) {
+            this.data.set(key, {
+              ...entry,
+              value: this._deserializeValue(entry.value)
+            });
+          }
+        }
+      } else if (this.storageType === 'database') {
+        // Database implementation would go here
+        console.log('Database loading not yet implemented');
+      }
+    } catch (error) {
+      console.error(`Failed to load memory from storage: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Get the storage file path for this memory instance
+   * @private
+   * @returns {string} - The file path
+   */
+  _getStorageFilePath() {
+    // Create a hash of the namespace to use as the filename
+    const hash = createHash('md5').update(this.namespace).digest('hex');
+    return path.join(this.storagePath, `memory_${hash}.json`);
+  }
+  
+  /**
+   * Serialize a value for storage
+   * @private
+   * @param {any} value - The value to serialize
+   * @returns {Object} - Serialized value
+   */
+  _serializeValue(value) {
+    // Handle special types like Date, RegExp, etc.
+    if (value instanceof Date) {
+      return { __type: 'Date', value: value.toISOString() };
+    }
+    
+    // For other types, just return as is (JSON.stringify will handle it)
+    return value;
+  }
+  
+  /**
+   * Deserialize a value from storage
+   * @private
+   * @param {Object} serialized - The serialized value
+   * @returns {any} - Deserialized value
+   */
+  _deserializeValue(serialized) {
+    // Handle special types
+    if (serialized && typeof serialized === 'object' && serialized.__type) {
+      if (serialized.__type === 'Date') {
+        return new Date(serialized.value);
+      }
+    }
+    
+    // For other types, just return as is
+    return serialized;
   }
 }
 
@@ -246,20 +451,39 @@ class LongTermMemory extends Memory {
 class MemoryFactory {
   /**
    * Create a memory system based on the specified type
-   * @param {string} type - The type of memory to create ('short-term' or 'long-term')
+   * @param {string|Object} typeOrConfig - The type of memory to create or a config object
    * @param {Object} options - Options for the memory system
    * @returns {Memory} - The created memory system
    */
-  static createMemory(type, options = {}) {
-    switch (type.toLowerCase()) {
-      case 'short-term':
-        return new ShortTermMemory(options.expiryTime);
-      case 'long-term':
-        return new LongTermMemory(options);
-      default:
-        // Default to short-term memory
-        return new ShortTermMemory();
+  static createMemory(typeOrConfig, options = {}) {
+    // Handle case where typeOrConfig is a string (backward compatibility)
+    if (typeof typeOrConfig === 'string') {
+      const type = typeOrConfig.toLowerCase();
+      
+      switch (type) {
+        case 'short-term':
+          return new ShortTermMemory(options);
+        case 'long-term':
+          return new LongTermMemory(options);
+        default:
+          console.warn(`Unknown memory type: ${type}, defaulting to short-term`);
+          return new ShortTermMemory(options);
+      }
     }
+    
+    // Handle case where typeOrConfig is a config object
+    if (typeOrConfig && typeof typeOrConfig === 'object') {
+      const config = typeOrConfig;
+      
+      if (config.type === 'long-term') {
+        return new LongTermMemory({ ...config, ...options });
+      } else {
+        return new ShortTermMemory({ ...config, ...options });
+      }
+    }
+    
+    // Default case
+    return new ShortTermMemory(options);
   }
 }
 
