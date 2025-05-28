@@ -8,11 +8,17 @@
  * - Rate limiting to prevent API abuse
  * - Fallback mechanisms for reliability
  * - Metrics collection for performance monitoring
+ * - Environment variable loading for API keys
+ * - Safe object merging to prevent prototype pollution
  */
+
+// Load environment variables
+require('dotenv').config();
 
 const fetch = require('node-fetch');
 const config = require('../config');
 const { MemoryFactory } = require('./Memory');
+const { safeMerge } = require('../utils/safeUtils');
 
 /**
  * LLMIntegration provides a unified interface for different LLM backends
@@ -22,17 +28,20 @@ class LLMIntegration {
    * @param {Object} config - Configuration for the LLM integration
    */
   constructor(userConfig = {}) {
-    this.config = {
-      defaultProvider: config.llm.defaultProvider,
-      defaultModel: config.llm.defaultModel,
-      temperature: config.llm.temperature,
-      maxTokens: config.llm.maxTokens,
-      retryAttempts: 3,
-      retryDelay: 1000,
-      cacheEnabled: true,
-      rateLimitPerMinute: 60,
-      ...userConfig
-    };
+    // Use safeMerge to prevent prototype pollution
+    this.config = safeMerge(
+      {
+        defaultProvider: config.llm.defaultProvider,
+        defaultModel: config.llm.defaultModel,
+        temperature: config.llm.temperature,
+        maxTokens: config.llm.maxTokens,
+        retryAttempts: 3,
+        retryDelay: 1000,
+        cacheEnabled: true,
+        rateLimitPerMinute: 60
+      },
+      userConfig
+    );
     
     this.modelProviders = new Map();
     this.activeProvider = null;
@@ -74,7 +83,17 @@ class LLMIntegration {
       initialize: async (config) => {
         try {
           const { OpenAI } = await import('openai');
-          return new OpenAI(config);
+          // Use environment variable for API key if not provided in config
+          const apiKey = config.apiKey || process.env.OPENAI_API_KEY;
+          
+          if (!apiKey) {
+            throw new Error('OpenAI API key is missing. Please set OPENAI_API_KEY in your .env file or provide it in the config.');
+          }
+          
+          // Use safeMerge to prevent prototype pollution
+          return new OpenAI(safeMerge({ 
+            apiKey
+          }, config));
         } catch (error) {
           console.error('Failed to initialize OpenAI client:', error.message);
           throw new Error('OpenAI client initialization failed. Please check your API key and network connection.');

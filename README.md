@@ -185,6 +185,53 @@ await ceoAgent.executeTask({
 
 Refer to the examples directory for more detailed usage scenarios.
 
+## Security Features
+
+The framework includes several security features to protect your application:
+
+### Rate Limiting
+
+- **Global Rate Limiting**: Protects against brute force and DoS attacks by limiting requests per IP
+- **API-Specific Rate Limiting**: Stricter limits on API endpoints to prevent abuse
+
+### HTTPS Enforcement
+
+- Automatic HTTPS redirection in production
+- Configurable SSL certificate paths
+- Development mode fallback to HTTP for local testing
+
+### Security Headers
+
+- Content Security Policy (CSP) to prevent XSS attacks
+- X-XSS-Protection header
+- X-Content-Type-Options to prevent MIME sniffing
+- Referrer-Policy for privacy protection
+- Other security headers via Helmet
+
+### Secrets Management
+
+- Environment variable management with dotenv-vault
+- Secure encryption utilities for sensitive data
+- Separation of development and production secrets
+
+### Security Scanning
+
+- Automated dependency vulnerability scanning
+- Regular security audits via npm scripts
+- Security report generation and archiving
+
+### Input Validation
+
+- Comprehensive request validation with Joi
+- Protection against injection attacks
+- Parameter sanitization
+
+To run a security scan:
+
+```bash
+npm run security:scan
+```
+
 ## Contributing
 
 Contributions are welcome! Please read our contributing guidelines for details on our code of conduct and the process for submitting pull requests.
