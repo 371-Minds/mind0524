@@ -9,8 +9,7 @@
  * - Agent lifecycle management
  */
 
-const path = require('path');
-const fs = require('fs');
+// Import Agent and config without Node.js modules
 const Agent = require('../agents/Agent');
 const config = require('../config');
 
@@ -97,25 +96,9 @@ class AgentFactory {
       return this.customAgentClasses.get(role.toLowerCase());
     }
     
-    // Then try to dynamically load the class
-    try {
-      const className = `${role.charAt(0).toUpperCase() + role.slice(1).toLowerCase()}Agent`;
-      const filePath = path.join(__dirname, '..', 'agents', `${className}.js`);
-      
-      // Check if the file exists
-      if (fs.existsSync(filePath)) {
-        const AgentClass = require(filePath);
-        
-        // Validate that it extends Agent
-        if (AgentClass.prototype instanceof Agent) {
-          // Cache it for future use
-          this.customAgentClasses.set(role.toLowerCase(), AgentClass);
-          return AgentClass;
-        }
-      }
-    } catch (error) {
-      console.warn(`Failed to dynamically load agent class for role ${role}: ${error.message}`);
-    }
+    // In browser environment, we can't dynamically load files
+    // Instead, you should register all agent classes explicitly using registerAgentClass
+    console.warn(`No agent class registered for role ${role}, falling back to generic Agent`);
     
     // Fall back to generic Agent class
     return Agent;

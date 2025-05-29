@@ -9,10 +9,8 @@
  * - TTL (Time-To-Live) support for all memory types
  */
 
-const fs = require('fs');
-const path = require('path');
+// Import only browser-compatible modules
 const config = require('../config');
-const { createHash } = require('crypto');
 
 /**
  * Base Memory class for agent memory systems
@@ -258,33 +256,20 @@ class ShortTermMemory extends Memory {
 /**
  * Long-term memory implementation
  * Persists data and never expires automatically
+ * Browser-compatible version using localStorage
  */
 class LongTermMemory extends Memory {
   /**
    * @param {Object} options - Options for long-term memory
    * @param {boolean} [options.persistent=true] - Whether to persist memory to storage
-   * @param {string} [options.storageType='file'] - Storage type ('file', 'database')
-   * @param {string} [options.storagePath] - Path for file storage
+   * @param {string} [options.storageType='localStorage'] - Storage type ('localStorage', 'sessionStorage')
    */
   constructor(options = {}) {
     super(options);
     
     this.persistent = options.persistent !== false;
-    this.storageType = options.storageType || config.memory.longTerm.storageType;
-    this.storagePath = options.storagePath || config.memory.longTerm.storagePath;
+    this.storageType = options.storageType || 'localStorage';
     this.namespace = options.namespace || 'default';
-    
-    // Create storage directory if it doesn't exist
-    if (this.persistent && this.storageType === 'file') {
-      try {
-        if (!fs.existsSync(this.storagePath)) {
-          fs.mkdirSync(this.storagePath, { recursive: true });
-        }
-      } catch (error) {
-        console.error(`Failed to create storage directory: ${error.message}`);
-        this.persistent = false;
-      }
-    }
     
     // Load persisted data if available and persistence is enabled
     if (this.persistent) {
@@ -346,22 +331,22 @@ class LongTermMemory extends Memory {
     if (!this.persistent) return;
     
     try {
-      if (this.storageType === 'file') {
-        const filePath = this._getStorageFilePath();
-        
-        // Convert Map to serializable object
-        const serializable = {};
-        for (const [key, entry] of this.data.entries()) {
-          serializable[key] = {
-            ...entry,
-            value: this._serializeValue(entry.value)
-          };
-        }
-        
-        fs.writeFileSync(filePath, JSON.stringify(serializable, null, 2));
-      } else if (this.storageType === 'database') {
-        // Database implementation would go here
-        console.log('Database persistence not yet implemented');
+      // Convert Map to serializable object
+      const serializable = {};
+      for (const [key, entry] of this.data.entries()) {
+        serializable[key] = {
+          ...entry,
+          value: this._serializeValue(entry.value)
+        };
+      }
+      
+      const storageKey = `memory_${this.namespace}`;
+      const storageValue = JSON.stringify(serializable);
+      
+      if (this.storageType === 'localStorage') {
+        localStorage.setItem(storageKey, storageValue);
+      } else if (this.storageType === 'sessionStorage') {
+        sessionStorage.setItem(storageKey, storageValue);
       }
     } catch (error) {
       console.error(`Failed to save memory to storage: ${error.message}`);
@@ -376,38 +361,29 @@ class LongTermMemory extends Memory {
     if (!this.persistent) return;
     
     try {
-      if (this.storageType === 'file') {
-        const filePath = this._getStorageFilePath();
+      const storageKey = `memory_${this.namespace}`;
+      let storageValue;
+      
+      if (this.storageType === 'localStorage') {
+        storageValue = localStorage.getItem(storageKey);
+      } else if (this.storageType === 'sessionStorage') {
+        storageValue = sessionStorage.getItem(storageKey);
+      }
+      
+      if (storageValue) {
+        const data = JSON.parse(storageValue);
         
-        if (fs.existsSync(filePath)) {
-          const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          
-          // Convert serialized object back to Map entries
-          for (const [key, entry] of Object.entries(data)) {
-            this.data.set(key, {
-              ...entry,
-              value: this._deserializeValue(entry.value)
-            });
-          }
+        // Convert serialized object back to Map entries
+        for (const [key, entry] of Object.entries(data)) {
+          this.data.set(key, {
+            ...entry,
+            value: this._deserializeValue(entry.value)
+          });
         }
-      } else if (this.storageType === 'database') {
-        // Database implementation would go here
-        console.log('Database loading not yet implemented');
       }
     } catch (error) {
       console.error(`Failed to load memory from storage: ${error.message}`);
     }
-  }
-  
-  /**
-   * Get the storage file path for this memory instance
-   * @private
-   * @returns {string} - The file path
-   */
-  _getStorageFilePath() {
-    // Create a hash of the namespace to use as the filename
-    const hash = createHash('md5').update(this.namespace).digest('hex');
-    return path.join(this.storagePath, `memory_${hash}.json`);
   }
   
   /**
