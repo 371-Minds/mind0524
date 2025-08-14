@@ -5,8 +5,8 @@
  * and managing agents, as well as executing tasks.
  */
 
+const container = require('./core/container');
 const AgentFactory = require('./core/AgentFactory');
-const { globalKnowledgeGraph } = require('./core/KnowledgeGraph');
 const config = require('./config');
 const EventEmitter = require('events');
 
@@ -18,9 +18,10 @@ eventBus.setMaxListeners(100); // Allow many listeners
  * Framework class that provides the main API for the autonomous agent framework
  */
 class Framework {
-  constructor() {
+  constructor({ knowledgeGraph }) {
     this.initialized = false;
     this.startTime = null;
+    this.knowledgeGraph = knowledgeGraph;
     
     // Set up event listeners for agent communication
     this._setupEventListeners();
@@ -129,13 +130,13 @@ class Framework {
     // Add concepts to knowledge graph
     const nodeIds = [];
     for (const concept of concepts) {
-      const node = await globalKnowledgeGraph.addNode(concept);
+      const node = await this.knowledgeGraph.addNode(concept);
       nodeIds.push(node.id);
     }
     
     // Connect related concepts
-    await globalKnowledgeGraph.connectNodes(nodeIds[0], nodeIds[1], 'related_to', 0.8);
-    await globalKnowledgeGraph.connectNodes(nodeIds[2], nodeIds[3], 'related_to', 0.7);
+    await this.knowledgeGraph.connectNodes(nodeIds[0], nodeIds[1], 'related_to', 0.8);
+    await this.knowledgeGraph.connectNodes(nodeIds[2], nodeIds[3], 'related_to', 0.7);
     
     console.log(`Seeded knowledge graph with ${concepts.length} concepts`);
   }
@@ -171,21 +172,21 @@ class Framework {
     });
     
     // Connect agents in the knowledge graph
-    await globalKnowledgeGraph.addNode({
+    await this.knowledgeGraph.addNode({
       type: 'agent',
       content: JSON.stringify(ceo.getStatus()),
       metadata: { role: 'CEO' },
       source: 'system'
     });
     
-    await globalKnowledgeGraph.addNode({
+    await this.knowledgeGraph.addNode({
       type: 'agent',
       content: JSON.stringify(cfo.getStatus()),
       metadata: { role: 'CFO' },
       source: 'system'
     });
     
-    await globalKnowledgeGraph.addNode({
+    await this.knowledgeGraph.addNode({
       type: 'agent',
       content: JSON.stringify(cto.getStatus()),
       metadata: { role: 'CTO' },
@@ -283,7 +284,7 @@ class Framework {
    * @returns {Promise<Array<Object>>} - Search results
    */
   async queryKnowledge(query, options = {}) {
-    return globalKnowledgeGraph.semanticSearch(query, options);
+    return this.knowledgeGraph.semanticSearch(query, options);
   }
   
   /**
@@ -292,7 +293,7 @@ class Framework {
    * @returns {Promise<Object>} - The added node
    */
   async addKnowledge(knowledge) {
-    return globalKnowledgeGraph.addNode(knowledge);
+    return this.knowledgeGraph.addNode(knowledge);
   }
   
   /**
@@ -320,7 +321,7 @@ class Framework {
       initialized: this.initialized,
       uptime: this.startTime ? Date.now() - this.startTime : 0,
       agentCount: AgentFactory.getAllAgents().size,
-      knowledgeGraphStats: globalKnowledgeGraph.getStatistics()
+      knowledgeGraphStats: this.knowledgeGraph.getStatistics()
     };
   }
   
@@ -384,7 +385,7 @@ class Framework {
     });
     
     // Print knowledge graph statistics
-    console.log('Knowledge Graph Statistics:', globalKnowledgeGraph.getStatistics());
+    console.log('Knowledge Graph Statistics:', await this.knowledgeGraph.getStatistics());
     
     // Final status
     console.log('Framework status:', this.getStatus());
@@ -399,20 +400,17 @@ class Framework {
   }
 }
 
-// Create and export a singleton instance
-const framework = new Framework();
-
 // For backward compatibility
 async function initializeFramework() {
+  const framework = container.get('Framework');
   await framework.initialize();
   return framework;
 }
 
 module.exports = {
-  framework,
   initializeFramework,
   AgentFactory,
-  globalKnowledgeGraph,
   config,
-  eventBus
+  eventBus,
+  container,
 };
