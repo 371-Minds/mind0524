@@ -7,7 +7,7 @@
  * 3. Resource management and optimization
  */
 
-const { globalRLManager } = require('./ReinforcementLearning');
+const { ReinforcementLearningManager } = require('./ReinforcementLearning');
 
 // Default performance threshold for agent termination
 const DEFAULT_PERFORMANCE_THRESHOLD = 0.3; // Agents with average reward below this are candidates for termination
@@ -16,17 +16,70 @@ const DEFAULT_PERFORMANCE_THRESHOLD = 0.3; // Agents with average reward below t
  * Manages agent lifecycle, scaling, and fault tolerance
  */
 class AgentOrchestrator {
-  constructor(config = {}) {
+  constructor({ db, rlManager, config = {} }) {
     this.performanceThreshold = config.performanceThreshold || DEFAULT_PERFORMANCE_THRESHOLD;
     this.evaluationPeriod = config.evaluationPeriod || 3600000; // Default: evaluate every hour
     this.agents = new Map(); // Map of all managed agents
     this.evaluationTimers = new Map(); // Timers for periodic evaluation
-    this.terminatedAgents = []; // History of terminated agents
     
     // Actor model related properties
     this.nodeId = config.nodeId || `node-${Date.now()}`;
     this.clusterNodes = new Set(); // For distributed setup
-    this.messageQueue = []; // Simple message queue for actor communication
+
+    // Injected dependencies
+    this.db = db;
+    this.rlManager = rlManager;
+
+    this.messageQueueCollection = null;
+    this.agentStateCollection = null;
+    this.terminatedAgentsCollection = null;
+
+    this._initializeDatabase();
+  }
+
+  async _initializeDatabase() {
+    await this.db.setActiveProvider('local', { url: 'mongodb://localhost:27017' });
+    this.agentStateCollection = this.db.getCollection('agents');
+    this.terminatedAgentsCollection = this.db.getCollection('terminated_agents');
+
+    // Capped collection for message queue
+    const db = this.db.activeClient.db(this.db.activeDb);
+    const collections = await db.listCollections({ name: 'message_queue' }).toArray();
+    if (collections.length === 0) {
+      await db.createCollection('message_queue', { capped: true, size: 100000, max: 1000 });
+    }
+    this.messageQueueCollection = this.db.getCollection('message_queue');
+
+    this._startMessageListener();
+    this._loadAgentsFromDB();
+  }
+
+  _startMessageListener() {
+    const cursor = this.messageQueueCollection.find({}, { tailable: true, awaitData: true });
+    cursor.forEach(message => {
+      this._processMessage(message);
+    }).catch(err => {
+        console.error("Error with tailable cursor:", err);
+        // Restart the listener after a short delay
+        setTimeout(() => this._startMessageListener(), 5000);
+    });
+  }
+
+  async _loadAgentsFromDB() {
+    const agents = await this.agentStateCollection.find({}).toArray();
+    for (const agentData of agents) {
+      // This is a simplified representation; a real implementation would
+      // need to reconstruct the agent instance.
+      this.agents.set(agentData.agentId, {
+        instance: { role: agentData.role }, // Placeholder for actual instance
+        role: agentData.role,
+        createdAt: agentData.createdAt,
+        options: agentData.options,
+      });
+      if (agentData.options.enableAutoEvaluation !== false) {
+        this.scheduleEvaluation(agentData.agentId);
+      }
+    }
   }
 
   /**
@@ -35,14 +88,24 @@ class AgentOrchestrator {
    * @param {Object} agent - The agent instance
    * @param {Object} options - Registration options
    */
-  registerAgent(agentId, agent, options = {}) {
-    this.agents.set(agentId, {
+  async registerAgent(agentId, agent, options = {}) {
+    const agentData = {
+      agentId,
       instance: agent,
       role: agent.role,
-      createdAt: Date.now(),
+      createdAt: new Date(),
       options
-    });
+    };
+    this.agents.set(agentId, agentData);
     
+    await this.agentStateCollection.insertOne({
+      agentId,
+      role: agent.role,
+      createdAt: agentData.createdAt,
+      options,
+      nodeId: this.nodeId,
+    });
+
     // Set up periodic evaluation if enabled
     if (options.enableAutoEvaluation !== false) {
       this.scheduleEvaluation(agentId);
@@ -84,7 +147,7 @@ class AgentOrchestrator {
     }
     
     // Get performance metrics from RL manager
-    const metrics = globalRLManager.getPerformanceMetrics(agentId);
+    const metrics = this.rlManager.getPerformanceMetrics(agentId);
     const score = metrics.averageReward;
     
     console.log(`AgentOrchestrator: Evaluated agent ${agentId}, score: ${score}`);
@@ -127,16 +190,17 @@ class AgentOrchestrator {
       this.evaluationTimers.delete(agentId);
     }
     
-    // Record termination
-    this.terminatedAgents.push({
+    // Record termination in the database
+    await this.terminatedAgentsCollection.insertOne({
       agentId,
       role: agent.role,
-      terminatedAt: Date.now(),
+      terminatedAt: new Date(),
       ...context
     });
     
-    // Remove from active agents
+    // Remove from active agents and database
     this.agents.delete(agentId);
+    await this.agentStateCollection.deleteOne({ agentId });
     
     console.log(`AgentOrchestrator: Terminated agent ${agentId} (${agent.role}) due to ${context.reason || 'manual termination'}`);
     
@@ -189,33 +253,24 @@ class AgentOrchestrator {
   async sendMessage(targetAgentId, message) {
     const messageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
-    this.messageQueue.push({
-      id: messageId,
+    await this.messageQueueCollection.insertOne({
+      _id: messageId,
       sender: this.nodeId,
       target: targetAgentId,
       message,
-      timestamp: Date.now(),
+      timestamp: new Date(),
       status: 'queued'
     });
-    
-    // In a real implementation, this would use proper message passing
-    // and potentially distribute across nodes in a cluster
-    
-    // Process the message queue (in a real system, this would be more sophisticated)
-    setTimeout(() => this.processMessageQueue(), 0);
     
     return messageId;
   }
 
   /**
-   * Process the message queue (simple actor model implementation)
+   * Process a message from the queue
    * @private
    */
-  async processMessageQueue() {
-    if (this.messageQueue.length === 0) return;
-    
-    const message = this.messageQueue.shift();
-    message.status = 'processing';
+  async _processMessage(message) {
+    await this.messageQueueCollection.updateOne({ _id: message._id }, { $set: { status: 'processing' } });
     
     try {
       // Check if target agent exists locally
@@ -225,24 +280,16 @@ class AgentOrchestrator {
         // Deliver message to agent
         if (typeof agent.receiveMessage === 'function') {
           await agent.receiveMessage(message.message, message.sender);
-          message.status = 'delivered';
+          await this.messageQueueCollection.updateOne({ _id: message._id }, { $set: { status: 'delivered' } });
         } else {
-          message.status = 'failed';
-          message.error = 'Agent does not implement receiveMessage';
+          await this.messageQueueCollection.updateOne({ _id: message._id }, { $set: { status: 'failed', error: 'Agent does not implement receiveMessage' } });
         }
       } else {
         // In a distributed system, would check other nodes
-        message.status = 'failed';
-        message.error = 'Agent not found';
+        await this.messageQueueCollection.updateOne({ _id: message._id }, { $set: { status: 'failed', error: 'Agent not found' } });
       }
     } catch (error) {
-      message.status = 'failed';
-      message.error = error.message;
-    }
-    
-    // Continue processing queue
-    if (this.messageQueue.length > 0) {
-      setTimeout(() => this.processMessageQueue(), 0);
+      await this.messageQueueCollection.updateOne({ _id: message._id }, { $set: { status: 'failed', error: error.message } });
     }
   }
 
@@ -250,11 +297,13 @@ class AgentOrchestrator {
    * Get statistics about managed agents
    * @returns {Object} - Orchestrator statistics
    */
-  getStatistics() {
+  async getStatistics() {
+    const terminatedCount = await this.terminatedAgentsCollection.countDocuments();
+    const messageQueueSize = await this.messageQueueCollection.countDocuments();
     return {
       activeAgents: this.agents.size,
-      terminatedAgents: this.terminatedAgents.length,
-      messageQueueSize: this.messageQueue.length,
+      terminatedAgents: terminatedCount,
+      messageQueueSize: messageQueueSize,
       nodeId: this.nodeId,
       clusterSize: this.clusterNodes.size + 1, // Include self
       performanceThreshold: this.performanceThreshold
@@ -264,23 +313,17 @@ class AgentOrchestrator {
   /**
    * Clean up resources when shutting down
    */
-  shutdown() {
+  async shutdown() {
     // Clear all evaluation timers
     for (const timerId of this.evaluationTimers.values()) {
       clearInterval(timerId);
     }
     
     this.evaluationTimers.clear();
-    this.messageQueue = [];
+    await this.db.closeAll();
     
     console.log('AgentOrchestrator: Shutdown complete');
   }
 }
 
-// Create a global instance for use throughout the application
-const globalAgentOrchestrator = new AgentOrchestrator();
-
-module.exports = {
-  AgentOrchestrator,
-  globalAgentOrchestrator
-};
+module.exports = AgentOrchestrator;

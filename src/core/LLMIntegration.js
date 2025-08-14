@@ -17,7 +17,6 @@ require('dotenv').config();
 
 const fetch = require('node-fetch');
 const config = require('../config');
-const { MemoryFactory } = require('./Memory');
 const { safeMerge } = require('../utils/safeUtils');
 
 /**
@@ -27,7 +26,7 @@ class LLMIntegration {
   /**
    * @param {Object} config - Configuration for the LLM integration
    */
-  constructor(userConfig = {}) {
+  constructor({ db, userConfig = {} }) {
     // Use safeMerge to prevent prototype pollution
     this.config = safeMerge(
       {
@@ -45,16 +44,17 @@ class LLMIntegration {
     
     this.modelProviders = new Map();
     this.activeProvider = null;
-    this.requestCount = 0;
-    this.lastRequestTime = Date.now();
     
-    // Set up caching
-    this.cache = this.config.cacheEnabled 
-      ? MemoryFactory.createMemory('short-term', { 
-          expiryTime: 1000 * 60 * 60, // 1 hour cache
-          namespace: 'llm_cache'
-        })
-      : null;
+    // Injected dependencies
+    this.db = db;
+
+    this.cacheCollection = null;
+    this.rateLimitCollection = null;
+
+    if (this.config.cacheEnabled) {
+      this._initializeCache();
+    }
+    this._initializeRateLimiter();
     
     // Metrics
     this.metrics = {
@@ -72,10 +72,17 @@ class LLMIntegration {
     this._initializeDefaultProviders();
   }
 
-  /**
-   * Initialize built-in model providers
-   * @private
-   */
+  async _initializeCache() {
+    await this.db.setActiveProvider('local', { url: 'mongodb://localhost:27017' });
+    this.cacheCollection = this.db.getCollection('llm_cache');
+    // Create TTL index to automatically expire cache entries
+    await this.cacheCollection.createIndex({ "createdAt": 1 }, { expireAfterSeconds: 3600 });
+  }
+
+  async _initializeRateLimiter() {
+    await this.db.setActiveProvider('local', { url: 'mongodb://localhost:27017' });
+    this.rateLimitCollection = this.db.getCollection('rate_limits');
+  }
   _initializeDefaultProviders() {
     // OpenAI provider
     this.registerModelProvider('openai', {
@@ -280,7 +287,7 @@ class LLMIntegration {
     }
 
     // Check rate limiting
-    this._checkRateLimit();
+    await this._checkRateLimit(options.userId || 'anonymous');
     
     // Update metrics
     this.metrics.totalRequests++;
@@ -295,11 +302,11 @@ class LLMIntegration {
     
     // Check cache if enabled
     const cacheKey = this._generateCacheKey(prompt, generationOptions);
-    if (this.cache && !options.skipCache) {
-      const cachedResult = this.cache.retrieve(cacheKey);
+    if (this.config.cacheEnabled && !options.skipCache) {
+      const cachedResult = await this.cacheCollection.findOne({ _id: cacheKey });
       if (cachedResult) {
         this.metrics.cacheHits++;
-        return cachedResult;
+        return cachedResult.result;
       }
       this.metrics.cacheMisses++;
     }
@@ -325,8 +332,8 @@ class LLMIntegration {
         this.metrics.totalLatency += (Date.now() - startTime);
         
         // Cache the result if caching is enabled
-        if (this.cache && !options.skipCache) {
-          this.cache.store(cacheKey, result);
+        if (this.config.cacheEnabled && !options.skipCache) {
+          await this.cacheCollection.insertOne({ _id: cacheKey, result, createdAt: new Date() });
         }
         
         return result;
@@ -383,7 +390,7 @@ class LLMIntegration {
     }
     
     // Check rate limiting
-    this._checkRateLimit();
+    await this._checkRateLimit(options.userId || 'anonymous');
     
     // Update metrics
     this.metrics.totalRequests++;
@@ -416,29 +423,76 @@ class LLMIntegration {
       );
     }
   }
+
+  async generateEmbedding(text, options = {}) {
+    if (this.activeProvider !== 'openai') {
+        throw new Error('Embeddings are only supported for the OpenAI provider at this time.');
+    }
+
+    await this._checkRateLimit(options.userId || 'anonymous');
+
+    const cacheKey = `embedding::${text}`;
+    if (this.config.cacheEnabled && !options.skipCache) {
+        const cachedResult = await this.cacheCollection.findOne({ _id: cacheKey });
+        if (cachedResult) {
+            this.metrics.cacheHits++;
+            return cachedResult.embedding;
+        }
+        this.metrics.cacheMisses++;
+    }
+
+    const provider = this.modelProviders.get(this.activeProvider);
+    let attempts = 0;
+    let lastError = null;
+
+    while (attempts < this.config.retryAttempts) {
+        try {
+            const response = await provider.client.embeddings.create({
+                model: 'text-embedding-ada-002',
+                input: text,
+            });
+            const embedding = response.data[0].embedding;
+
+            if (this.config.cacheEnabled && !options.skipCache) {
+                await this.cacheCollection.insertOne({ _id: cacheKey, embedding, createdAt: new Date() });
+            }
+            return embedding;
+        } catch (error) {
+            attempts++;
+            this.metrics.retries++;
+            lastError = error;
+            if (attempts < this.config.retryAttempts) {
+                await new Promise(resolve => setTimeout(resolve, this.config.retryDelay * attempts));
+            }
+        }
+    }
+
+    this.metrics.failedRequests++;
+    throw new LLMError(
+        `Failed to generate embedding after ${attempts} attempts`,
+        lastError,
+        { provider: this.activeProvider, model: 'text-embedding-ada-002' }
+    );
+  }
   
   /**
    * Check if we're exceeding the rate limit
    * @private
    */
-  _checkRateLimit() {
+  async _checkRateLimit(userId) {
     const now = Date.now();
-    const timeWindow = 60 * 1000; // 1 minute in milliseconds
-    
-    // Reset counter if we're in a new time window
-    if (now - this.lastRequestTime > timeWindow) {
-      this.requestCount = 0;
-      this.lastRequestTime = now;
+    const timeWindow = 60 * 1000; // 1 minute
+    const limit = this.config.rateLimitPerMinute;
+
+    const result = await this.rateLimitCollection.findOneAndUpdate(
+        { userId, window: Math.floor(now / timeWindow) },
+        { $inc: { count: 1 } },
+        { upsert: true, returnDocument: 'after' }
+    );
+
+    if (result.value.count > limit) {
+        throw new Error('Rate limit exceeded.');
     }
-    
-    // Check if we're over the limit
-    if (this.requestCount >= this.config.rateLimitPerMinute) {
-      const waitTime = timeWindow - (now - this.lastRequestTime);
-      throw new Error(`Rate limit exceeded. Try again in ${Math.ceil(waitTime / 1000)} seconds.`);
-    }
-    
-    // Increment the counter
-    this.requestCount++;
   }
   
   /**
@@ -550,9 +604,9 @@ class LLMIntegration {
   /**
    * Clear the completion cache
    */
-  clearCache() {
-    if (this.cache) {
-      this.cache.clear();
+  async clearCache() {
+    if (this.config.cacheEnabled) {
+      await this.cacheCollection.deleteMany({});
     }
   }
   
@@ -605,5 +659,4 @@ class LLMError extends Error {
   }
 }
 
-module.exports = LLMIntegration;
-module.exports.LLMError = LLMError;
+module.exports = { LLMIntegration, LLMError };
