@@ -217,6 +217,45 @@ class LLMIntegration {
         }
       }
     });
+
+    // MindsDB provider
+    this.registerModelProvider('mindsdb', {
+      models: ['mindsdb'], // This is a placeholder, as MindsDB agents are created dynamically
+      initialize: async (config) => {
+        try {
+          const MindsDB = require('mindsdb-js-sdk');
+          await MindsDB.connect({
+            host: process.env.MINDSDB_HOST || 'http://127.0.0.1',
+            port: process.env.MINDSDB_PORT || '47334',
+            user: process.env.MINDSDB_USER,
+            password: process.env.MINDSDB_PASSWORD,
+          });
+          return MindsDB;
+        } catch (error) {
+          console.error('Failed to initialize MindsDB client:', error.message);
+          throw new Error('MindsDB client initialization failed. Please check your connection details.');
+        }
+      },
+      generateCompletion: async (client, prompt, options) => {
+        try {
+          // In a real implementation, we would create and query the agent here.
+          // For now, we will just return a placeholder response.
+          const query = `
+            CREATE AGENT IF NOT EXISTS ${options.agentName || 'my_agent'}
+            USING
+                model = 'gpt-4',
+                prompt_template = 'you are a helpful assistant';
+          `;
+          await client.SQL.runQuery(query);
+          const result = await client.SQL.runQuery(`
+            SELECT answer FROM ${options.agentName || 'my_agent'} WHERE question = '${prompt}';
+          `);
+          return result.rows[0].answer;
+        } catch (error) {
+          throw new LLMError('MindsDB completion failed', error, { provider: 'mindsdb' });
+        }
+      },
+    });
   }
 
   /**
