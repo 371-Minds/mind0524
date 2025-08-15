@@ -24,6 +24,7 @@
     "vault:pull": "npx dotenv-vault pull",
     "vault:open": "npx dotenv-vault open",
     "vault:build": "npx dotenv-vault build"
+    "mindsdb-js-sdk": "npm install --save mindsdb-js-sdk"
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20250528.0",
