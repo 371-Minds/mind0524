@@ -37,6 +37,7 @@ Supports multiple language model providers:
 - State-of-the-Art Models (e.g., OpenAI GPT)
 - Local Models (e.g., LLaMA)
 - Custom Model Integration
+- MindsDB Integration
 
 ### Database Integration
 
@@ -45,6 +46,7 @@ Flexible database support for both local and cloud environments:
 - DigitalOcean MongoDB
 - Cloudflare KV
 - Provider-agnostic interface
+- MindsDB as an MCP Server
 
 ### Tools
 
@@ -184,6 +186,38 @@ await ceoAgent.executeTask({
 ```
 
 Refer to the examples directory for more detailed usage scenarios.
+
+### MindsDB Integration
+
+The framework now supports integration with MindsDB, allowing you to create and query MindsDB agents directly from the framework.
+
+To use the MindsDB integration, you need to set the following environment variables:
+
+```
+MINDSDB_HOST=http://127.0.0.1
+MINDSDB_PORT=47334
+MINDSDB_USER=mindsdb
+MINDSDB_PASSWORD=
+```
+
+You can then create a MindsDB agent like this:
+
+```javascript
+const { AgentFactory } = require('./src');
+
+// Create a MindsDB agent
+const mindsdbAgent = await AgentFactory.createAgent({
+  role: 'MindsDB',
+  name: 'my_mindsdb_agent',
+});
+
+// Execute a task with the MindsDB agent
+const result = await mindsdbAgent.executeTask({
+  description: 'What is the meaning of life?',
+});
+
+console.log('MindsDB Agent response:', result);
+```
 
 ## Security Features
 

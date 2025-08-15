@@ -98,10 +98,13 @@ class AgentFactory {
     
     // In browser environment, we can't dynamically load files
     // Instead, you should register all agent classes explicitly using registerAgentClass
-    console.warn(`No agent class registered for role ${role}, falling back to generic Agent`);
-    
-    // Fall back to generic Agent class
-    return Agent;
+    switch (role.toLowerCase()) {
+      case 'mindsdb':
+        return require('../agents/MindsDBAgent');
+      default:
+        console.warn(`No agent class registered for role ${role}, falling back to generic Agent`);
+        return Agent;
+    }
   }
   
   /**
